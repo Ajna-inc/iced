@@ -776,6 +776,8 @@ mod ajna_embed {
     const SWP_FRAMECHANGED: u32 = 0x0020;
 
     const SW_HIDE: i32 = 0;
+    const GWLP_HWNDPARENT: i32 = -8;
+    const SWP_NOACTIVATE: u32 = 0x0010;
 
     // Rail width + insets in logical pixels (mirrors the shell's theme). The
     // chrome page is placed in the stage region to the right of the rail.
@@ -801,20 +803,27 @@ mod ajna_embed {
             return 0;
         }
 
-        // Hide chrome's own browser window; the ui-layer host will host the page
-        // as a child views::WebView inside the Iced stage instead.
+        // Owned-overlay model: chrome renders the page natively in its own
+        // window; the Iced window becomes an *owned* window of it (composited
+        // ABOVE it by DWM -- no airspace -- with no taskbar entry, and hidden
+        // when chrome minimizes). We size/position it as an overlay strip.
         if let Some(chrome) = find_browser_window(iced) {
             unsafe {
-                ShowWindow(chrome, SW_HIDE);
+                SetWindowLongPtrW(iced, GWLP_HWNDPARENT, chrome);
+                let mut rc = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+                GetWindowRect(chrome, &mut rc);
+                // Left rail strip over chrome (host toggles the width by route).
+                SetWindowPos(
+                    iced, 0, rc.left, rc.top, 360, rc.bottom - rc.top,
+                    SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
             }
         }
 
-        // Retained geometry helpers for the host-driven stage layout.
-        let _ = (SetParent, SetWindowLongPtrW, GetClientRect, SetWindowPos, window.scale_factor());
-        let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW,
-                 SWP_FRAMECHANGED, RAIL_DIP, GAP_DIP, INSET_DIP);
-
-        // Notify the host with our HWND so it can host the page in the stage.
+        // Retained for later host-driven overlay sizing.
+        let _ = (SetParent, GetClientRect, ShowWindow, SW_HIDE, window.scale_factor());
+        let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_FRAMECHANGED, RAIL_DIP,
+                 GAP_DIP, INSET_DIP);
         super::ajna_hooks::notify_window_ready(iced);
         iced
     }
