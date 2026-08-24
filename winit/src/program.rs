@@ -803,26 +803,19 @@ mod ajna_embed {
             return 0;
         }
 
-        // Owned-overlay model: chrome renders the page natively in its own
-        // window; the Iced window becomes an *owned* window of it (composited
-        // ABOVE it by DWM -- no airspace -- with no taskbar entry, and hidden
-        // when chrome minimizes). We size/position it as an overlay strip.
+        // One-window (OSR) model: hide chrome's own browser window; the page is
+        // rendered off-screen and drawn into the Iced stage as a texture, so the
+        // rail floats over it with no second window and no airspace.
         if let Some(chrome) = find_browser_window(iced) {
             unsafe {
-                SetWindowLongPtrW(iced, GWLP_HWNDPARENT, chrome);
-                let mut rc = Rect { left: 0, top: 0, right: 0, bottom: 0 };
-                GetWindowRect(chrome, &mut rc);
-                // Left rail strip over chrome (host toggles the width by route).
-                SetWindowPos(
-                    iced, 0, rc.left, rc.top, 360, rc.bottom - rc.top,
-                    SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                );
+                ShowWindow(chrome, SW_HIDE);
             }
         }
 
-        // Retained for later host-driven overlay sizing.
-        let _ = (SetParent, GetClientRect, ShowWindow, SW_HIDE, window.scale_factor());
-        let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_FRAMECHANGED, RAIL_DIP,
+        let _ = (SetParent, SetWindowLongPtrW, GetClientRect, GetWindowRect,
+                 SetWindowPos, window.scale_factor());
+        let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                 SWP_FRAMECHANGED, SWP_NOACTIVATE, GWLP_HWNDPARENT, RAIL_DIP,
                  GAP_DIP, INSET_DIP);
         super::ajna_hooks::notify_window_ready(iced);
         iced
