@@ -674,6 +674,7 @@ mod ajna_embed {
         fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
         fn IsWindowVisible(hwnd: isize) -> i32;
         fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     }
 
     #[link(name = "kernel32")]
@@ -744,6 +745,8 @@ mod ajna_embed {
     const SWP_SHOWWINDOW: u32 = 0x0040;
     const SWP_FRAMECHANGED: u32 = 0x0020;
 
+    const SW_HIDE: i32 = 0;
+
     pub fn embed_if_requested(window: &winit::window::Window) {
         let Ok(handle) = window.window_handle() else {
             return;
@@ -753,38 +756,21 @@ mod ajna_embed {
         };
         let child: isize = win32.hwnd.get();
 
-        // Embed only when the host explicitly provides a parent HWND. (Child-
-        // HWND embedding fights chrome's DirectComposition content -- airspace --
-        // so the real integration renders Iced beside an inset WebContents in a
-        // custom browser window; kept here behind an opt-in for experiments.)
-        let parent_hwnd = std::env::var("AJNA_PARENT_HWND")
-            .ok()
-            .and_then(|s| s.trim().parse::<isize>().ok())
-            .filter(|&h| h != 0);
-        let Some(parent_hwnd) = parent_hwnd else {
-            let _ = find_browser_window; // retained for opt-in experiments
+        // Overlaying Iced as a child of chrome's window fights chrome's
+        // DirectComposition content (airspace), so instead HIDE chrome's own
+        // browser window and let the Iced shell be the sole visible window. The
+        // eventual single window (Iced rail + inset WebContents) is a custom
+        // browser window; until then this keeps it to one window on screen.
+        // Opt out with AJNA_KEEP_CHROME_WINDOW=1.
+        if std::env::var_os("AJNA_KEEP_CHROME_WINDOW").is_some() {
+            let _ = (SetParent, SetWindowLongPtrW, GetClientRect, SetWindowPos);
+            let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_FRAMECHANGED);
             return;
-        };
-        unsafe {
-            // Turn the top-level window into an embedded child of the parent.
-            SetWindowLongPtrW(child, GWL_STYLE, WS_CHILD | WS_VISIBLE);
-            SetParent(child, parent_hwnd);
-            let mut rc = Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
-            GetClientRect(parent_hwnd, &mut rc);
-            SetWindowPos(
-                child,
-                0,
-                0,
-                0,
-                rc.right - rc.left,
-                rc.bottom - rc.top,
-                SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-            );
+        }
+        if let Some(browser) = find_browser_window(child) {
+            unsafe {
+                ShowWindow(browser, SW_HIDE);
+            }
         }
     }
 }
