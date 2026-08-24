@@ -747,31 +747,53 @@ mod ajna_embed {
 
     const SW_HIDE: i32 = 0;
 
-    pub fn embed_if_requested(window: &winit::window::Window) {
+    // Rail width + insets in logical pixels (mirrors the shell's theme). The
+    // chrome page is placed in the stage region to the right of the rail.
+    const RAIL_DIP: f64 = 56.0;
+    const GAP_DIP: f64 = 8.0;
+    const INSET_DIP: f64 = 8.0;
+
+    /// Reparents chrome's browser window into the Iced window's stage region so
+    /// the real page renders there (its DirectComposition content composites
+    /// above the Iced stage), while the Iced rail stays visible on the left.
+    /// Returns the chrome HWND on success so it can be repositioned on resize.
+    pub fn embed_if_requested(window: &winit::window::Window) -> isize {
         let Ok(handle) = window.window_handle() else {
-            return;
+            return 0;
         };
         let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-            return;
+            return 0;
         };
-        let child: isize = win32.hwnd.get();
+        let iced: isize = win32.hwnd.get();
 
-        // Overlaying Iced as a child of chrome's window fights chrome's
-        // DirectComposition content (airspace), so instead HIDE chrome's own
-        // browser window and let the Iced shell be the sole visible window. The
-        // eventual single window (Iced rail + inset WebContents) is a custom
-        // browser window; until then this keeps it to one window on screen.
-        // Opt out with AJNA_KEEP_CHROME_WINDOW=1.
         if std::env::var_os("AJNA_KEEP_CHROME_WINDOW").is_some() {
-            let _ = (SetParent, SetWindowLongPtrW, GetClientRect, SetWindowPos);
-            let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW, SWP_FRAMECHANGED);
-            return;
+            let _ = (ShowWindow, SW_HIDE);
+            return 0;
         }
-        if let Some(browser) = find_browser_window(child) {
-            unsafe {
-                ShowWindow(browser, SW_HIDE);
-            }
+
+        let Some(chrome) = find_browser_window(iced) else {
+            return 0;
+        };
+
+        let scale = window.scale_factor();
+        let rail = ((RAIL_DIP + GAP_DIP + INSET_DIP) * scale) as i32;
+        let inset = (INSET_DIP * scale) as i32;
+        let size = window.inner_size();
+        let x = rail;
+        let y = inset;
+        let w = (size.width as i32 - rail - inset).max(1);
+        let h = (size.height as i32 - 2 * inset).max(1);
+
+        unsafe {
+            // Strip chrome's frame and make it an embedded child in the stage.
+            SetWindowLongPtrW(chrome, GWL_STYLE, WS_CHILD | WS_VISIBLE);
+            SetParent(chrome, iced);
+            SetWindowPos(
+                chrome, 0, x, y, w, h,
+                SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            );
         }
+        chrome
     }
 }
 
