@@ -187,9 +187,17 @@ where
     let mut debug = Debug::new();
     debug.startup_started();
 
-    let event_loop = EventLoop::with_user_event()
-        .build()
-        .expect("Create event loop");
+    // Ajna: allow the event loop to be created off the main thread so the Iced
+    // shell can run on a dedicated thread inside chrome.exe (which owns main).
+    let event_loop = {
+        let mut builder = EventLoop::with_user_event();
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            let _ = builder.with_any_thread(true);
+        }
+        builder.build().expect("Create event loop")
+    };
 
     let (proxy, worker) = Proxy::new(event_loop.create_proxy());
 
