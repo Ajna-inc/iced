@@ -533,6 +533,16 @@ where
                                     .create_window(window_attributes)
                                     .expect("Create window");
 
+                                // Ajna: if a parent HWND was provided (via the
+                                // AJNA_PARENT_HWND env var), embed this window as
+                                // a WS_CHILD of it, so the Iced shell renders
+                                // inside chrome's browser window (one window).
+                                #[cfg(all(
+                                    target_os = "windows",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                ajna_embed::embed_if_requested(&window);
+
                                 #[cfg(target_arch = "wasm32")]
                                 {
                                     use winit::platform::web::WindowExtWebSys;
@@ -626,6 +636,85 @@ where
 
 struct Boot<C> {
     compositor: C,
+}
+
+// Ajna: embed the Iced window as a WS_CHILD of a host-provided parent HWND
+// (chrome's browser window). Keeps the Iced UI in a single window with the
+// browser. Parent is passed via the AJNA_PARENT_HWND env var (decimal HWND).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod ajna_embed {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetParent(child: isize, new_parent: isize) -> isize;
+        fn SetWindowLongPtrW(hwnd: isize, index: i32, new_long: isize) -> isize;
+        fn GetClientRect(hwnd: isize, rect: *mut Rect) -> i32;
+        fn SetWindowPos(
+            hwnd: isize,
+            after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const GWL_STYLE: i32 = -16;
+    const WS_CHILD: isize = 0x4000_0000;
+    const WS_VISIBLE: isize = 0x1000_0000;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_SHOWWINDOW: u32 = 0x0040;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+
+    pub fn embed_if_requested(window: &winit::window::Window) {
+        let Ok(parent) = std::env::var("AJNA_PARENT_HWND") else {
+            return;
+        };
+        let Ok(parent_hwnd) = parent.trim().parse::<isize>() else {
+            return;
+        };
+        if parent_hwnd == 0 {
+            return;
+        }
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return;
+        };
+        let child: isize = win32.hwnd.get();
+        unsafe {
+            // Turn the top-level window into an embedded child of the parent.
+            SetWindowLongPtrW(child, GWL_STYLE, WS_CHILD | WS_VISIBLE);
+            SetParent(child, parent_hwnd);
+            let mut rc = Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            GetClientRect(parent_hwnd, &mut rc);
+            SetWindowPos(
+                child,
+                0,
+                0,
+                0,
+                rc.right - rc.left,
+                rc.bottom - rc.top,
+                SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
