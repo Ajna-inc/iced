@@ -775,23 +775,18 @@ mod ajna_embed {
             return 0;
         };
 
-        let scale = window.scale_factor();
-        let rail = ((RAIL_DIP + GAP_DIP + INSET_DIP) * scale) as i32;
-        let inset = (INSET_DIP * scale) as i32;
-        let size = window.inner_size();
-        let x = rail;
-        let y = inset;
-        let w = (size.width as i32 - rail - inset).max(1);
-        let h = (size.height as i32 - 2 * inset).max(1);
-
+        // NOTE: reparenting chrome's window into the stage (SetParent + WS_CHILD)
+        // crashes it -- Aura's DesktopWindowTreeHostWin can't become a child.
+        // Overlaying Iced onto chrome hits DirectComposition airspace. So a real
+        // page in the stage needs the custom browser window (inset views::WebView
+        // beside the Iced rail) or OSR. Until then, hide chrome's window so the
+        // Iced shell is the single visible window. The geometry helpers below are
+        // retained for that work.
+        let _ = (SetParent, SetWindowLongPtrW, GetClientRect, SetWindowPos, window.scale_factor());
+        let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                 SWP_FRAMECHANGED, RAIL_DIP, GAP_DIP, INSET_DIP);
         unsafe {
-            // Strip chrome's frame and make it an embedded child in the stage.
-            SetWindowLongPtrW(chrome, GWL_STYLE, WS_CHILD | WS_VISIBLE);
-            SetParent(chrome, iced);
-            SetWindowPos(
-                chrome, 0, x, y, w, h,
-                SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-            );
+            ShowWindow(chrome, SW_HIDE);
         }
         chrome
     }
