@@ -653,6 +653,8 @@ mod ajna_embed {
         bottom: i32,
     }
 
+    type EnumCb = extern "system" fn(isize, isize) -> i32;
+
     #[link(name = "user32")]
     extern "system" {
         fn SetParent(child: isize, new_parent: isize) -> isize;
@@ -667,6 +669,72 @@ mod ajna_embed {
             cy: i32,
             flags: u32,
         ) -> i32;
+        fn EnumWindows(cb: EnumCb, lparam: isize) -> i32;
+        fn GetWindowThreadProcessId(hwnd: isize, pid: *mut u32) -> u32;
+        fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
+        fn IsWindowVisible(hwnd: isize) -> i32;
+        fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    struct FindCtx {
+        pid: u32,
+        exclude: isize,
+        best: isize,
+        best_area: i64,
+    }
+
+    extern "system" fn find_cb(hwnd: isize, lparam: isize) -> i32 {
+        unsafe {
+            let ctx = &mut *(lparam as *mut FindCtx);
+            if hwnd == ctx.exclude || IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid != ctx.pid {
+                return 1;
+            }
+            let mut buf = [0u16; 64];
+            let n = GetClassNameW(hwnd, buf.as_mut_ptr(), 64);
+            let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            // chrome's browser window is "Chrome_WidgetWin_1".
+            if !class.starts_with("Chrome_WidgetWin") {
+                return 1;
+            }
+            let mut rc = Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            GetWindowRect(hwnd, &mut rc);
+            let area = (rc.right - rc.left) as i64 * (rc.bottom - rc.top) as i64;
+            if area > ctx.best_area {
+                ctx.best_area = area;
+                ctx.best = hwnd;
+            }
+        }
+        1
+    }
+
+    // Finds chrome's top-level browser window in this process (largest visible
+    // Chrome_WidgetWin window), excluding our own window.
+    fn find_browser_window(exclude: isize) -> Option<isize> {
+        let mut ctx = FindCtx {
+            pid: unsafe { GetCurrentProcessId() },
+            exclude,
+            best: 0,
+            best_area: 0,
+        };
+        unsafe {
+            EnumWindows(find_cb, &mut ctx as *mut FindCtx as isize);
+        }
+        (ctx.best != 0).then_some(ctx.best)
     }
 
     const GWL_STYLE: i32 = -16;
@@ -677,15 +745,6 @@ mod ajna_embed {
     const SWP_FRAMECHANGED: u32 = 0x0020;
 
     pub fn embed_if_requested(window: &winit::window::Window) {
-        let Ok(parent) = std::env::var("AJNA_PARENT_HWND") else {
-            return;
-        };
-        let Ok(parent_hwnd) = parent.trim().parse::<isize>() else {
-            return;
-        };
-        if parent_hwnd == 0 {
-            return;
-        }
         let Ok(handle) = window.window_handle() else {
             return;
         };
@@ -693,6 +752,18 @@ mod ajna_embed {
             return;
         };
         let child: isize = win32.hwnd.get();
+
+        // Prefer an explicit parent HWND from the host; otherwise auto-discover
+        // chrome's browser window in this process. If neither is found, stay a
+        // normal top-level window.
+        let parent_hwnd = std::env::var("AJNA_PARENT_HWND")
+            .ok()
+            .and_then(|s| s.trim().parse::<isize>().ok())
+            .filter(|&h| h != 0)
+            .or_else(|| find_browser_window(child));
+        let Some(parent_hwnd) = parent_hwnd else {
+            return;
+        };
         unsafe {
             // Turn the top-level window into an embedded child of the parent.
             SetWindowLongPtrW(child, GWL_STYLE, WS_CHILD | WS_VISIBLE);
