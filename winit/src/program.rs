@@ -753,15 +753,16 @@ mod ajna_embed {
         };
         let child: isize = win32.hwnd.get();
 
-        // Prefer an explicit parent HWND from the host; otherwise auto-discover
-        // chrome's browser window in this process. If neither is found, stay a
-        // normal top-level window.
+        // Embed only when the host explicitly provides a parent HWND. (Child-
+        // HWND embedding fights chrome's DirectComposition content -- airspace --
+        // so the real integration renders Iced beside an inset WebContents in a
+        // custom browser window; kept here behind an opt-in for experiments.)
         let parent_hwnd = std::env::var("AJNA_PARENT_HWND")
             .ok()
             .and_then(|s| s.trim().parse::<isize>().ok())
-            .filter(|&h| h != 0)
-            .or_else(|| find_browser_window(child));
+            .filter(|&h| h != 0);
         let Some(parent_hwnd) = parent_hwnd else {
+            let _ = find_browser_window; // retained for opt-in experiments
             return;
         };
         unsafe {
