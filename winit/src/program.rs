@@ -638,9 +638,39 @@ struct Boot<C> {
     compositor: C,
 }
 
-// Ajna: embed the Iced window as a WS_CHILD of a host-provided parent HWND
-// (chrome's browser window). Keeps the Iced UI in a single window with the
-// browser. Parent is passed via the AJNA_PARENT_HWND env var (decimal HWND).
+// Ajna: window-ready hook. The C++ ui-layer host sets a callback; the fork
+// invokes it with the Iced window's HWND once created, so the host can host a
+// child views::WebView (the page) in the Iced stage on the browser UI thread.
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+pub mod ajna_hooks {
+    use std::os::raw::c_void;
+    use std::sync::OnceLock;
+
+    pub type OnWindowReady = extern "C" fn(*mut c_void, isize);
+
+    struct Host {
+        ctx: *mut c_void,
+        on_window_ready: OnWindowReady,
+    }
+    unsafe impl Send for Host {}
+    unsafe impl Sync for Host {}
+
+    static HOST: OnceLock<Host> = OnceLock::new();
+
+    /// Called by the shell (app crate) with the host's callback + context.
+    pub fn set_on_window_ready(ctx: *mut c_void, cb: OnWindowReady) {
+        let _ = HOST.set(Host { ctx, on_window_ready: cb });
+    }
+
+    pub(crate) fn notify_window_ready(hwnd: isize) {
+        if let Some(h) = HOST.get() {
+            (h.on_window_ready)(h.ctx, hwnd);
+        }
+    }
+}
+
+// Ajna: on window creation, hide chrome's own browser window and notify the
+// host of the Iced HWND so it can host the page in the stage.
 #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
 mod ajna_embed {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -771,24 +801,22 @@ mod ajna_embed {
             return 0;
         }
 
-        let Some(chrome) = find_browser_window(iced) else {
-            return 0;
-        };
+        // Hide chrome's own browser window; the ui-layer host will host the page
+        // as a child views::WebView inside the Iced stage instead.
+        if let Some(chrome) = find_browser_window(iced) {
+            unsafe {
+                ShowWindow(chrome, SW_HIDE);
+            }
+        }
 
-        // NOTE: reparenting chrome's window into the stage (SetParent + WS_CHILD)
-        // crashes it -- Aura's DesktopWindowTreeHostWin can't become a child.
-        // Overlaying Iced onto chrome hits DirectComposition airspace. So a real
-        // page in the stage needs the custom browser window (inset views::WebView
-        // beside the Iced rail) or OSR. Until then, hide chrome's window so the
-        // Iced shell is the single visible window. The geometry helpers below are
-        // retained for that work.
+        // Retained geometry helpers for the host-driven stage layout.
         let _ = (SetParent, SetWindowLongPtrW, GetClientRect, SetWindowPos, window.scale_factor());
         let _ = (GWL_STYLE, WS_CHILD, WS_VISIBLE, SWP_NOZORDER, SWP_SHOWWINDOW,
                  SWP_FRAMECHANGED, RAIL_DIP, GAP_DIP, INSET_DIP);
-        unsafe {
-            ShowWindow(chrome, SW_HIDE);
-        }
-        chrome
+
+        // Notify the host with our HWND so it can host the page in the stage.
+        super::ajna_hooks::notify_window_ready(iced);
+        iced
     }
 }
 
